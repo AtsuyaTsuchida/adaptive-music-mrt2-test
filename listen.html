@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>env-sound-music — 試聴</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #111; color: #eee; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #333; padding-bottom: .3rem; }
+  .row { display: grid; grid-template-columns: 220px 1fr; gap: .6rem; align-items: center; margin: .5rem 0; }
+  .label { font-size: .85rem; color: #aaa; }
+  audio { width: 100%; height: 32px; }
+  .src { background: #1a2333; }
+  .note { color: #888; font-size: .8rem; }
+  #viz { position: sticky; top: 0; z-index: 10; background: #0a0a0a; border: 1px solid #222;
+         border-radius: 8px; padding: .5rem; margin: 1rem 0; }
+  #viz canvas { width: 100%; height: 170px; display: block; border-radius: 4px; }
+  #nowplaying { font-size: .8rem; color: #6cf; margin: 0 0 .4rem .2rem; min-height: 1em;
+                font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>環境音 → Magenta RT 2 audio2audio 実験</h1>
+<p class="note">A = 環境音の埋め込みのみ / B = 環境音×テキスト 50:50ブレンド / C = B + drums=1（ループ向き）。「原音」は入力に使った環境音。</p>
+<div id="viz">
+  <div id="nowplaying">▶ 再生するとここに解析が表示されます（上: スペクトログラム / 下: 周波数バー＋波形）</div>
+  <canvas id="vizcanvas"></canvas>
+</div>
+<div id="root"></div>
+<script>
+const groups = {
+  "ベースライン (text: disco funk)": [["生成", "out/00_baseline_text_disco_funk.wav"]],
+  "雨と雷 × ambient techno with deep sub bass": [
+    ["原音", "samples/rain.wav"],
+    ["A audio-only", "out/rain_A_audio_only.wav"],
+    ["B blend 50%", "out/rain_B_blend50.wav"],
+    ["C blend + drums", "out/rain_C_blend_drums.wav"]],
+  "波 × slow evolving ambient pads": [
+    ["原音", "samples/ocean.wav"],
+    ["A audio-only", "out/ocean_A_audio_only.wav"],
+    ["B blend 50%", "out/ocean_B_blend50.wav"],
+    ["C blend + drums", "out/ocean_C_blend_drums.wav"]],
+  "地下鉄 × industrial percussion loop": [
+    ["原音", "samples/subway.wav"],
+    ["A audio-only", "out/subway_A_audio_only.wav"],
+    ["B blend 50%", "out/subway_B_blend50.wav"],
+    ["C blend + drums", "out/subway_C_blend_drums.wav"]],
+  "駅トンネル × minimal glitch electronica": [
+    ["原音", "samples/station.wav"],
+    ["A audio-only", "out/station_A_audio_only.wav"],
+    ["B blend 50%", "out/station_B_blend50.wav"],
+    ["C blend + drums", "out/station_C_blend_drums.wav"]],
+  "鳥 × flute and marimba melody, jazz trio": [
+    ["原音", "samples/birds.wav"],
+    ["A audio-only", "out/birds_A_audio_only.wav"],
+    ["B blend 50%", "out/birds_B_blend50.wav"],
+    ["C blend + drums", "out/birds_C_blend_drums.wav"]],
+};
+const root = document.getElementById("root");
+for (const [title, rows] of Object.entries(groups)) {
+  const h = document.createElement("h2"); h.textContent = title; root.appendChild(h);
+  for (const [label, src] of rows) {
+    const div = document.createElement("div"); div.className = "row";
+    const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+    const a = document.createElement("audio"); a.controls = true; a.preload = "none"; a.src = src;
+    if (label === "原音") a.className = "src";
+    a.dataset.title = `${title} — ${label}`;
+    div.append(l, a); root.appendChild(div);
+  }
+}
+
+// ---- visualizer: scrolling spectrogram + frequency bars + waveform ----
+const canvas = document.getElementById("vizcanvas");
+const g = canvas.getContext("2d");
+const np = document.getElementById("nowplaying");
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+let actx = null, analyser = null, freq = null, wave = null;
+const sources = new WeakMap();
+let current = null;
+
+function resize() {
+  canvas.width = canvas.clientWidth * DPR;
+  canvas.height = 170 * DPR;
+}
+window.addEventListener("resize", resize);
+
+function hook(audio) {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0.75;
+    analyser.connect(actx.destination);
+    freq = new Uint8Array(analyser.frequencyBinCount);
+    wave = new Uint8Array(analyser.fftSize);
+    resize();
+    // setInterval instead of requestAnimationFrame: keeps drawing even when
+    // the page is embedded/hidden (rAF is fully throttled there)
+    setInterval(draw, 33);
+  }
+  if (!sources.has(audio)) {
+    const src = actx.createMediaElementSource(audio);
+    src.connect(analyser);
+    sources.set(audio, src);
+  }
+}
+
+document.addEventListener("play", e => {
+  const a = e.target;
+  if (!(a instanceof HTMLAudioElement)) return;
+  document.querySelectorAll("audio").forEach(o => { if (o !== a) o.pause(); });
+  hook(a);
+  actx.resume();
+  current = a;
+}, true);
+
+// inferno-ish colormap for the spectrogram
+function heat(v) { // v: 0..1
+  const r = Math.min(255, 255 * Math.pow(v, 0.7) * 1.6);
+  const gr = Math.max(0, 255 * (v - 0.35) * 1.9);
+  const b = v < 0.4 ? 90 + v * 220 : Math.max(0, 255 * (1.1 - v));
+  return [r, gr, b];
+}
+
+// log-frequency row lookup for the spectrogram column
+function logBin(t, nBins) { // t: 0(bottom)..1(top)
+  const fMin = 30, fMax = 20000, nyq = 24000;
+  const f = fMin * Math.pow(fMax / fMin, t);
+  return Math.min(nBins - 1, Math.round(f / nyq * nBins));
+}
+
+function draw() {
+  if (!current || current.paused) return;
+  analyser.getByteFrequencyData(freq);
+  analyser.getByteTimeDomainData(wave);
+
+  const W = canvas.width, H = canvas.height;
+  const specH = Math.floor(H * 0.58), barsY = specH + 4 * DPR, barsH = H - barsY;
+  const col = 2 * DPR; // spectrogram column width per frame
+
+  // 1) scroll spectrogram left, draw newest column at right (log-frequency)
+  g.drawImage(canvas, col, 0, W - col, specH, 0, 0, W - col, specH);
+  for (let y = 0; y < specH; y++) {
+    const t = 1 - y / specH;
+    const v = freq[logBin(t, freq.length)] / 255;
+    const [r, gr, b] = heat(v);
+    g.fillStyle = `rgb(${r|0},${gr|0},${b|0})`;
+    g.fillRect(W - col, y, col, 1);
+  }
+
+  // 2) frequency bars (log-spaced)
+  g.fillStyle = "#0a0a0a";
+  g.fillRect(0, specH, W, H - specH);
+  const nBars = 96, bw = W / nBars;
+  for (let i = 0; i < nBars; i++) {
+    const v = freq[logBin(i / (nBars - 1), freq.length)] / 255;
+    const h = v * barsH;
+    const [r, gr, b] = heat(v);
+    g.fillStyle = `rgba(${r|0},${gr|0},${b|0},0.9)`;
+    g.fillRect(i * bw, H - h, bw - 1 * DPR, h);
+  }
+
+  // 3) waveform overlaid on the bars
+  g.strokeStyle = "rgba(255,255,255,0.75)";
+  g.lineWidth = 1.2 * DPR;
+  g.beginPath();
+  for (let i = 0; i < wave.length; i += 4) {
+    const x = i / wave.length * W;
+    const y = barsY + (wave[i] / 255) * barsH;
+    i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke();
+
+  np.textContent = `▶ ${current.dataset.title}  ${current.currentTime.toFixed(1)}s / ${(current.duration || 0).toFixed(1)}s`;
+}
+</script>
+</body>
+</html>
