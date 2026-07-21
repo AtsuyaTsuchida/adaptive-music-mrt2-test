@@ -22,7 +22,6 @@ document.head.append(Object.assign(document.createElement("style"), {textContent
   input[type=text] { width: 100%; box-sizing: border-box; }
   .drums button { margin-right: .4rem; min-width: 64px; cursor: pointer; }
   .drums button.on { background: #2a3a55; border-color: #6cf; color: #fff; }
-  canvas { width: 100%; display: block; }
   .levels { display: grid; grid-template-columns: 84px 1fr 64px; gap: .6rem;
             align-items: center; font-size: .8rem; margin: .35rem 0; }
   .bar { height: 10px; background: #1c1c22; border-radius: 5px; overflow: hidden; }
@@ -43,7 +42,6 @@ const el = (tag, props = {}, ...children) => {
 };
 
 // ---------- structure ----------
-const meter = el("canvas", {id: "meter", height: 44});
 const stat = el("div", {id: "stat", textContent: "connecting…"});
 const playpause = el("button", {id: "playpause", textContent: "…",
   style: "font-size:1.05rem; min-width:96px; cursor:pointer"});
@@ -77,7 +75,6 @@ document.body.append(
   el("div", {className: "panel"},
     el("div", {style: "display:flex; gap:.8rem; align-items:center; margin-bottom:.5rem"},
       playpause, stat),
-    meter,
     level("envbar", "env level", "--env"),
     level("genbar", "gen level", "--gen")),
   el("div", {className: "panel"},
@@ -115,26 +112,6 @@ promptInput.addEventListener("change", () => post({prompt: promptInput.value}));
 fetch("/sources").then(r => r.json()).then(list =>
   envSelect.append(...list.map(s => el("option", {textContent: s}))));
 
-// ---------- meter ----------
-const mg = meter.getContext("2d");
-const DPR = Math.min(window.devicePixelRatio || 1, 2);
-function sizeMeter() { meter.width = meter.clientWidth * DPR; meter.height = 44 * DPR; }
-window.addEventListener("resize", sizeMeter); sizeMeter();
-
-function drawMeter(m) {
-  const W = meter.width, H = meter.height, pad = 8 * DPR;
-  const grad = mg.createLinearGradient(pad, 0, W - pad, 0);
-  grad.addColorStop(0, "#4da3ff"); grad.addColorStop(1, "#ff9b45");
-  mg.clearRect(0, 0, W, H);
-  mg.fillStyle = grad; mg.globalAlpha = .85;
-  mg.fillRect(pad, H * 0.4, W - 2 * pad, H * 0.26); mg.globalAlpha = 1;
-  const x = pad + m * (W - 2 * pad);
-  mg.fillStyle = "#fff"; mg.beginPath(); mg.arc(x, H * 0.53, 8 * DPR, 0, 7); mg.fill();
-  mg.font = `${10.5 * DPR}px -apple-system`;
-  mg.fillStyle = "#9ac6ff"; mg.textAlign = "left"; mg.fillText("environment", pad, H * 0.26);
-  mg.fillStyle = "#ffc9a0"; mg.textAlign = "right"; mg.fillText("music", W - pad, H * 0.26);
-}
-
 // ---------- state polling ----------
 async function poll() {
   try {
@@ -156,7 +133,6 @@ async function poll() {
     $("envbar").firstElementChild.style.width = Math.min(100, e * 600) + "%";
     $("genbar").firstElementChild.style.width = Math.min(100, g * 600) + "%";
     $("envrms").value = e.toFixed(3); $("genrms").value = g.toFixed(3);
-    drawMeter(0.5 * (g / (e + g + 1e-6)) + 0.5 * (1 - params.w_audio));
     stat.textContent =
       `generated ${status.chunks * 2}s / buffer ${status.buffer}s / underruns ${status.underruns}`;
   } catch { stat.textContent = "server offline"; }
