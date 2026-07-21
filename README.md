@@ -1,4 +1,4 @@
-# env-sound-music
+# Adaptive Music - Magenta Realtime 2 Test
 
 An experiment in turning environmental sound (noise) into music, built on
 Google **Magenta RealTime 2** (MLX backend, native on Apple Silicon).

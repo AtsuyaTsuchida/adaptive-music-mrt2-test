@@ -1,4 +1,4 @@
-document.title = "live — realtime control";
+document.title = "Adaptive Music - Magenta Realtime 2 Test";
 document.head.append(Object.assign(document.createElement("style"), {textContent: `
   :root { --env: #4da3ff; --gen: #ff9b45; }
   body { font-family: -apple-system, sans-serif; background: #0d0d0f; color: #eee;
@@ -65,7 +65,7 @@ const envSelect = el("select", {id: "env"});
 const promptInput = el("input", {type: "text", id: "prompt"});
 
 document.body.append(
-  el("h1", {textContent: "live — realtime synthesis & balance control"}),
+  el("h1", {textContent: "Adaptive Music - Magenta Realtime 2 Test"}),
   el("div", {className: "panel"},
     el("div", {style: "display:flex; gap:.8rem; align-items:center; margin-bottom:.5rem"},
       playpause, listen, stat),
