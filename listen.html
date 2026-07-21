@@ -20,7 +20,8 @@
 </head>
 <body>
 <h1>環境音 → Magenta RT 2 audio2audio 実験</h1>
-<p class="note">A = 環境音の埋め込みのみ / B = 環境音×テキスト 50:50ブレンド / C = B + drums=1（ループ向き）。「原音」は入力に使った環境音。</p>
+<p class="note">A = 環境音の埋め込みのみ / B = 環境音×テキスト 50:50ブレンド / C = B + drums=1（ループ向き）。「原音」は入力に使った環境音。
+→ <a href="emerge.html" style="color:#6cf">emergence: 環境音が徐々に音楽になる長尺ストリーム(可視化つき)</a></p>
 <div id="viz">
   <div id="nowplaying">▶ 再生するとここに解析が表示されます（上: スペクトログラム / 下: 周波数バー＋波形）</div>
   <canvas id="vizcanvas"></canvas>
@@ -28,6 +29,8 @@
 <div id="root"></div>
 <script>
 const groups = {
+  "長尺ストリーム: rain_to_birds (3分, 雨→地下鉄→波→鳥)": [
+    ["ストリーム生成", "out/stream_rain_to_birds.wav"]],
   "ベースライン (text: disco funk)": [["生成", "out/00_baseline_text_disco_funk.wav"]],
   "雨と雷 × ambient techno with deep sub bass": [
     ["原音", "samples/rain.wav"],

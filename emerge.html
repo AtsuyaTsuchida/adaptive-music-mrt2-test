@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>emergence — 環境音が音楽になる瞬間</title>
+<style>
+  :root { --env: #4da3ff; --gen: #ff9b45; }
+  body { font-family: -apple-system, sans-serif; background: #0d0d0f; color: #eee;
+         max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  .note { color: #888; font-size: .82rem; line-height: 1.6; }
+  .note b.env { color: var(--env); } .note b.gen { color: var(--gen); }
+  #player { display: flex; gap: .8rem; align-items: center; margin: 1rem 0; }
+  audio { flex: 1; height: 36px; }
+  canvas { width: 100%; display: block; border-radius: 6px; }
+  .panel { background: #121216; border: 1px solid #222; border-radius: 8px;
+           padding: .6rem; margin: .8rem 0; }
+  .panel h2 { font-size: .8rem; color: #999; margin: 0 0 .5rem .2rem; font-weight: 600; }
+  #meterwrap { position: relative; height: 46px; }
+  #state { font-size: .95rem; margin-top: .45rem; text-align: center;
+           font-variant-numeric: tabular-nums; }
+  #state .lbl { color: #6cf; }
+</style>
+</head>
+<body>
+<h1>emergence — 環境音が徐々に音楽になる</h1>
+<p class="note">
+  <b class="env">■ 原音レイヤー</b>(生の雨の録音)が最初は主役。
+  <b class="gen">■ 生成レイヤー</b>(Magenta RT 2 ストリーム)は雨の埋め込みそのもの(w_audio=1.0)から始まり、
+  時間とともにテキストプロンプト側へ補間され(w_audio→0.3)、途中でドラムが入る。
+  原音がフェードアウトし切ったとき、聴いているのは「雨から生まれた音楽」だけになる。
+</p>
+
+<div id="player">
+  <audio id="audio" controls preload="auto" src="out/stream_rain_emerge.wav"></audio>
+</div>
+
+<div class="panel">
+  <h2>環境音 ⇄ 音楽 メーター</h2>
+  <div id="meterwrap"><canvas id="meter" height="46"></canvas></div>
+  <div id="state">▶ 再生してください</div>
+</div>
+
+<div class="panel">
+  <h2>タイムライン(クリックでシーク)— ゲインカーブ・w_audio・ドラム</h2>
+  <canvas id="timeline" height="190"></canvas>
+</div>
+
+<div class="panel">
+  <h2>スペクトログラム(再生中の音)</h2>
+  <canvas id="spec" height="150"></canvas>
+</div>
+
+<script>
+const audio = document.getElementById("audio");
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+let J = null; // journey metadata
+
+fetch("out/stream_rain_emerge.json").then(r => r.json()).then(j => { J = j; sizeAll(); drawTimeline(); });
+
+function bp(curve, t) { // piecewise-linear breakpoint lookup
+  if (!curve || !curve.length) return 1;
+  if (t <= curve[0][0]) return curve[0][1];
+  for (let i = 1; i < curve.length; i++) {
+    if (t < curve[i][0]) {
+      const [t0, v0] = curve[i-1], [t1, v1] = curve[i];
+      return v0 + (v1 - v0) * (t - t0) / (t1 - t0);
+    }
+  }
+  return curve[curve.length-1][1];
+}
+function wAudioAt(t) {
+  const w = J.waypoints;
+  if (t <= w[0].t) return w[0].w_audio;
+  for (let i = 1; i < w.length; i++)
+    if (t < w[i].t) {
+      const u = (t - w[i-1].t) / (w[i].t - w[i-1].t);
+      return w[i-1].w_audio * (1-u) + w[i].w_audio * u;
+    }
+  return w[w.length-1].w_audio;
+}
+function drumsAt(t) {
+  let d = J.waypoints[0].drums;
+  for (const w of J.waypoints) if (t >= w.t) d = w.drums;
+  return d;
+}
+// musicality index 0..1: half "which layer is louder", half "how musical is the style"
+function musicality(t) {
+  const e = bp(J.env_mix.gain, t), g = bp(J.gen_gain, t);
+  const share = g / (e + g + 1e-6);
+  return 0.5 * share + 0.5 * (1 - wAudioAt(t));
+}
+
+// ---- canvases ----
+const meter = document.getElementById("meter"), mg = meter.getContext("2d");
+const tl = document.getElementById("timeline"), tg = tl.getContext("2d");
+const spec = document.getElementById("spec"), sg = spec.getContext("2d");
+
+function sizeAll() {
+  for (const [c, h] of [[meter, 46], [tl, 190], [spec, 150]]) {
+    c.width = c.clientWidth * DPR; c.height = h * DPR;
+  }
+}
+window.addEventListener("resize", () => { sizeAll(); drawTimeline(); });
+
+const envCol = "#4da3ff", genCol = "#ff9b45";
+
+function drawMeter(t) {
+  const W = meter.width, H = meter.height, pad = 8 * DPR;
+  const grad = mg.createLinearGradient(pad, 0, W - pad, 0);
+  grad.addColorStop(0, envCol); grad.addColorStop(1, genCol);
+  mg.clearRect(0, 0, W, H);
+  mg.fillStyle = "#1c1c22";
+  mg.fillRect(pad, H*0.35, W - 2*pad, H*0.3);
+  mg.fillStyle = grad; mg.globalAlpha = 0.85;
+  mg.fillRect(pad, H*0.35, (W - 2*pad), H*0.3);
+  mg.globalAlpha = 1;
+  const m = J ? musicality(t) : 0;
+  const x = pad + m * (W - 2*pad);
+  mg.fillStyle = "#fff";
+  mg.beginPath(); mg.arc(x, H*0.5, 8*DPR, 0, 7); mg.fill();
+  mg.strokeStyle = "#0d0d0f"; mg.lineWidth = 2*DPR; mg.stroke();
+  mg.font = `${11*DPR}px -apple-system`; mg.fillStyle = "#9ac6ff";
+  mg.textAlign = "left"; mg.fillText("環境音", pad, H*0.22);
+  mg.fillStyle = "#ffc9a0"; mg.textAlign = "right"; mg.fillText("音楽", W-pad, H*0.22);
+}
+
+function drawTimeline(t = -1) {
+  if (!J) return;
+  const W = tl.width, H = tl.height, D = J.duration;
+  const L = 34*DPR, R = 8*DPR, T = 16*DPR, B = 26*DPR; // margins
+  const pw = W - L - R, ph = H - T - B;
+  const X = s => L + s / D * pw, Y = v => T + (1 - v) * ph;
+  tg.clearRect(0, 0, W, H);
+
+  // drums-on region
+  tg.fillStyle = "rgba(255,155,69,0.10)";
+  let dOn = null;
+  for (const w of J.waypoints) {
+    if (w.drums === 1 && dOn === null) dOn = w.t;
+    if (w.drums !== 1 && dOn !== null) { tg.fillRect(X(dOn), T, X(w.t)-X(dOn), ph); dOn = null; }
+  }
+  if (dOn !== null) tg.fillRect(X(dOn), T, X(D)-X(dOn), ph);
+
+  // grid + axis
+  tg.strokeStyle = "#26262c"; tg.lineWidth = 1;
+  tg.font = `${10*DPR}px -apple-system`; tg.fillStyle = "#777"; tg.textAlign = "center";
+  for (let s = 0; s <= D; s += 30) {
+    tg.beginPath(); tg.moveTo(X(s), T); tg.lineTo(X(s), T+ph); tg.stroke();
+    tg.fillText(`${s}s`, X(s), H - 10*DPR);
+  }
+  tg.textAlign = "right";
+  for (const v of [0, 0.5, 1]) tg.fillText(v.toFixed(1), L - 5*DPR, Y(v) + 3*DPR);
+
+  const curve = (fn, color, dash = []) => {
+    tg.strokeStyle = color; tg.lineWidth = 2*DPR; tg.setLineDash(dash);
+    tg.beginPath();
+    for (let px = 0; px <= pw; px += 2) {
+      const v = fn(px / pw * D);
+      px === 0 ? tg.moveTo(L+px, Y(v)) : tg.lineTo(L+px, Y(v));
+    }
+    tg.stroke(); tg.setLineDash([]);
+  };
+  curve(s => bp(J.env_mix.gain, s), envCol);            // env layer gain
+  curve(s => bp(J.gen_gain, s), genCol);                // gen layer gain
+  curve(s => 1 - wAudioAt(s), "#e6e6e6", [5*DPR, 4*DPR]); // style musicality (1-w_audio)
+
+  // waypoint markers
+  for (const w of J.waypoints) {
+    tg.fillStyle = "#aaa";
+    tg.beginPath(); tg.arc(X(w.t), Y(1 - w.w_audio), 3.5*DPR, 0, 7); tg.fill();
+  }
+
+  // legend
+  tg.textAlign = "left"; tg.font = `${10.5*DPR}px -apple-system`;
+  const leg = [["原音ゲイン", envCol], ["生成ゲイン", genCol], ["スタイル音楽度 (1−w_audio)", "#e6e6e6"], ["ドラムon区間", "rgba(255,155,69,0.5)"]];
+  let lx = L + 6*DPR;
+  for (const [txt, col] of leg) {
+    tg.fillStyle = col; tg.fillRect(lx, 4*DPR, 10*DPR, 4*DPR);
+    tg.fillStyle = "#bbb"; tg.fillText(txt, lx + 14*DPR, 9*DPR);
+    lx += tg.measureText(txt).width + 34*DPR;
+  }
+
+  // playhead
+  if (t >= 0) {
+    tg.strokeStyle = "#fff"; tg.lineWidth = 1.5*DPR;
+    tg.beginPath(); tg.moveTo(X(t), T); tg.lineTo(X(t), T+ph); tg.stroke();
+  }
+}
+
+tl.addEventListener("click", e => {
+  if (!J) return;
+  const r = tl.getBoundingClientRect();
+  const L = 34, Rm = 8;
+  const frac = (e.clientX - r.left - L) / (r.width - L - Rm);
+  if (frac >= 0 && frac <= 1) audio.currentTime = frac * J.duration;
+});
+
+// ---- spectrogram (web audio) ----
+let actx = null, analyser = null, freq = null;
+audio.addEventListener("play", () => {
+  if (!actx) {
+    actx = new AudioContext();
+    const src = actx.createMediaElementSource(audio);
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.7;
+    src.connect(analyser); analyser.connect(actx.destination);
+    freq = new Uint8Array(analyser.frequencyBinCount);
+  }
+  actx.resume();
+});
+function heat(v) {
+  const r = Math.min(255, 255 * Math.pow(v, 0.7) * 1.6);
+  const g = Math.max(0, 255 * (v - 0.35) * 1.9);
+  const b = v < 0.4 ? 90 + v * 220 : Math.max(0, 255 * (1.1 - v));
+  return `rgb(${r|0},${g|0},${b|0})`;
+}
+function logBin(t, n) {
+  const f = 30 * Math.pow(20000 / 30, t);
+  return Math.min(n - 1, Math.round(f / 24000 * n));
+}
+function drawSpec() {
+  if (!analyser || audio.paused) return;
+  analyser.getByteFrequencyData(freq);
+  const W = spec.width, H = spec.height, col = 2*DPR;
+  sg.drawImage(spec, col, 0, W-col, H, 0, 0, W-col, H);
+  for (let y = 0; y < H; y++) {
+    const v = freq[logBin(1 - y/H, freq.length)] / 255;
+    sg.fillStyle = heat(v); sg.fillRect(W-col, y, col, 1);
+  }
+}
+
+// ---- animation loop (setInterval: keeps running when pane is backgrounded) ----
+const stateEl = document.getElementById("state");
+setInterval(() => {
+  const t = audio.currentTime || 0;
+  drawMeter(t);
+  if (J && !audio.paused) {
+    drawTimeline(t);
+    const m = musicality(t), e = bp(J.env_mix.gain, t), g = bp(J.gen_gain, t);
+    const d = drumsAt(t);
+    stateEl.innerHTML =
+      `<span class="lbl">${t.toFixed(1)}s</span> — 音楽度 ${(m*100).toFixed(0)}% ` +
+      `/ 原音 ${(e*100).toFixed(0)}% ・ 生成 ${(g*100).toFixed(0)}% ` +
+      `/ w_audio ${wAudioAt(t).toFixed(2)} / drums ${d === 1 ? "on" : d === 0 ? "off" : "—"}`;
+  }
+  drawSpec();
+}, 33);
+sizeAll();
+drawMeter(0);
+</script>
+</body>
+</html>

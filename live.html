@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>live — realtime control</title>
+<style>
+  :root { --env: #4da3ff; --gen: #ff9b45; }
+  body { font-family: -apple-system, sans-serif; background: #0d0d0f; color: #eee;
+         max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.25rem; }
+  .note { color: #888; font-size: .8rem; }
+  .panel { background: #121216; border: 1px solid #222; border-radius: 8px;
+           padding: .9rem 1rem; margin: .8rem 0; }
+  .ctl { display: grid; grid-template-columns: 150px 1fr 64px; gap: .8rem;
+         align-items: center; margin: .7rem 0; }
+  .ctl label { font-size: .85rem; color: #bbb; }
+  .ctl output { font-size: .85rem; text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: #6cf; }
+  select, input[type=text], button {
+    background: #1a1a20; color: #eee; border: 1px solid #333; border-radius: 6px;
+    padding: .45rem .6rem; font-size: .85rem; }
+  input[type=text] { width: 100%; box-sizing: border-box; }
+  .drums button { margin-right: .4rem; min-width: 64px; cursor: pointer; }
+  .drums button.on { background: #2a3a55; border-color: #6cf; color: #fff; }
+  canvas { width: 100%; display: block; }
+  #meterwrap { height: 44px; }
+  .levels { display: grid; grid-template-columns: 84px 1fr 64px; gap: .6rem;
+            align-items: center; font-size: .8rem; margin: .35rem 0; }
+  .bar { height: 10px; background: #1c1c22; border-radius: 5px; overflow: hidden; }
+  .bar div { height: 100%; width: 0%; transition: width .15s; }
+  #envbar div { background: var(--env); } #genbar div { background: var(--gen); }
+  #stat { color: #777; font-size: .75rem; margin-top: .5rem;
+          font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>live — realtime synthesis &amp; balance control</h1>
+
+<div class="panel">
+  <div style="display:flex; gap:.8rem; align-items:center; margin-bottom:.5rem">
+    <button id="playpause" style="font-size:1.05rem; min-width:96px; cursor:pointer">…</button>
+    <div id="stat" style="margin-top:0">connecting…</div>
+  </div>
+  <canvas id="meter" height="44"></canvas>
+  <div class="levels"><span style="color:var(--env)">env level</span><div class="bar" id="envbar"><div></div></div><output id="envrms">—</output></div>
+  <div class="levels"><span style="color:var(--gen)">gen level</span><div class="bar" id="genbar"><div></div></div><output id="genrms">—</output></div>
+</div>
+
+<div class="panel">
+  <div class="ctl"><label>w_audio<br><span class="note">1.0 = env embedding / 0.0 = text</span></label>
+    <input type="range" id="w_audio" min="0" max="1" step="0.01"><output for="w_audio"></output></div>
+  <div class="ctl"><label>env gain</label>
+    <input type="range" id="env_gain" min="0" max="1.5" step="0.01"><output for="env_gain"></output></div>
+  <div class="ctl"><label>gen gain</label>
+    <input type="range" id="gen_gain" min="0" max="1.5" step="0.01"><output for="gen_gain"></output></div>
+  <div class="ctl drums"><label>drums</label>
+    <div>
+      <button data-v="-1">auto</button>
+      <button data-v="0">off</button>
+      <button data-v="1">on</button>
+    </div><span></span></div>
+  <div class="ctl"><label>env source</label><select id="env"></select><span></span></div>
+  <div class="ctl"><label>text prompt</label><input type="text" id="prompt"><span></span></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const post = obj => fetch("/set", {method: "POST", body: JSON.stringify(obj)});
+let editing = null; // don't fight the user while dragging
+
+for (const id of ["w_audio", "env_gain", "gen_gain"]) {
+  const el = $(id), out = document.querySelector(`output[for=${id}]`);
+  el.addEventListener("input", () => { out.value = (+el.value).toFixed(2); editing = id; post({[id]: +el.value}); });
+  el.addEventListener("change", () => { editing = null; });
+}
+document.querySelectorAll(".drums button").forEach(b =>
+  b.addEventListener("click", () => post({drums: +b.dataset.v})));
+let isPlaying = true;
+$("playpause").addEventListener("click", () => post({playing: !isPlaying}));
+$("env").addEventListener("change", () => post({env: $("env").value}));
+$("prompt").addEventListener("change", () => post({prompt: $("prompt").value}));
+
+fetch("/sources").then(r => r.json()).then(list => {
+  $("env").innerHTML = list.map(s => `<option>${s}</option>`).join("");
+});
+
+const meter = $("meter"), mg = meter.getContext("2d");
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+function sizeMeter() { meter.width = meter.clientWidth * DPR; meter.height = 44 * DPR; }
+window.addEventListener("resize", sizeMeter); sizeMeter();
+
+function drawMeter(m) {
+  const W = meter.width, H = meter.height, pad = 8 * DPR;
+  const grad = mg.createLinearGradient(pad, 0, W - pad, 0);
+  grad.addColorStop(0, "#4da3ff"); grad.addColorStop(1, "#ff9b45");
+  mg.clearRect(0, 0, W, H);
+  mg.fillStyle = grad; mg.globalAlpha = .85;
+  mg.fillRect(pad, H*0.4, W - 2*pad, H*0.26); mg.globalAlpha = 1;
+  const x = pad + m * (W - 2*pad);
+  mg.fillStyle = "#fff"; mg.beginPath(); mg.arc(x, H*0.53, 8*DPR, 0, 7); mg.fill();
+  mg.font = `${10.5*DPR}px -apple-system`;
+  mg.fillStyle = "#9ac6ff"; mg.textAlign = "left"; mg.fillText("environment", pad, H*0.26);
+  mg.fillStyle = "#ffc9a0"; mg.textAlign = "right"; mg.fillText("music", W - pad, H*0.26);
+}
+
+async function poll() {
+  try {
+    const {params, status} = await (await fetch("/state")).json();
+    for (const id of ["w_audio", "env_gain", "gen_gain"]) {
+      if (editing !== id && document.activeElement !== $(id)) {
+        $(id).value = params[id];
+        document.querySelector(`output[for=${id}]`).value = (+params[id]).toFixed(2);
+      }
+    }
+    document.querySelectorAll(".drums button").forEach(b =>
+      b.classList.toggle("on", +b.dataset.v === params.drums));
+    isPlaying = params.playing;
+    $("playpause").textContent = isPlaying ? "⏸ pause" : "▶ play";
+    if (document.activeElement !== $("prompt")) $("prompt").value = params.prompt;
+    if (document.activeElement !== $("env")) $("env").value = params.env;
+
+    const e = status.env_rms, g = status.gen_rms;
+    $("envbar").firstElementChild.style.width = Math.min(100, e * 600) + "%";
+    $("genbar").firstElementChild.style.width = Math.min(100, g * 600) + "%";
+    $("envrms").value = e.toFixed(3); $("genrms").value = g.toFixed(3);
+    drawMeter(0.5 * (g / (e + g + 1e-6)) + 0.5 * (1 - params.w_audio));
+    $("stat").textContent =
+      `generated ${status.chunks * 2}s / buffer ${status.buffer}s / underruns ${status.underruns}`;
+  } catch { $("stat").textContent = "server offline"; }
+  setTimeout(poll, 250);
+}
+poll();
+</script>
+</body>
+</html>
