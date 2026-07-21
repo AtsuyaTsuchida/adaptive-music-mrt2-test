@@ -37,7 +37,7 @@ const el = (tag, props = {}, ...children) => {
 const stat = el("div", {id: "stat", textContent: "connecting…"});
 const playpause = el("button", {id: "playpause", textContent: "…",
   style: "font-size:1.05rem; min-width:96px; cursor:pointer"});
-const listen = el("button", {id: "listen", textContent: "🔊 listen here",
+const listen = el("button", {id: "listen", textContent: "listen here",
   style: "font-size:1.05rem; cursor:pointer"});
 
 const level = (id, label, colorVar) => el("div", {className: "levels"},
@@ -111,7 +111,7 @@ listen.addEventListener("click", async () => {
   }
   audioCtx = new AudioContext({sampleRate: 48000});
   streamAbort = new AbortController();
-  listen.textContent = "🔇 stop listening";
+  listen.textContent = "stop listening";
   let playTime = 0, carry = new Uint8Array(0);
   try {
     const res = await fetch("/stream", {signal: streamAbort.signal});
@@ -139,7 +139,7 @@ listen.addEventListener("click", async () => {
     }
   } catch {}
   if (audioCtx) { audioCtx.close(); audioCtx = null; streamAbort = null; }
-  listen.textContent = "🔊 listen here";
+  listen.textContent = "listen here";
 });
 async function poll() {
   try {
