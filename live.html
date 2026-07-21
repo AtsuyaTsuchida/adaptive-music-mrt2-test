@@ -68,10 +68,16 @@ const $ = id => document.getElementById(id);
 const post = obj => fetch("/set", {method: "POST", body: JSON.stringify(obj)});
 let editing = null; // don't fight the user while dragging
 
+// throttle slider drags to ~4 posts/s (each input event would otherwise POST)
+const pending = {};
+setInterval(() => {
+  const keys = Object.keys(pending);
+  if (keys.length) { post({...pending}); keys.forEach(k => delete pending[k]); }
+}, 250);
 for (const id of ["w_audio", "env_gain", "gen_gain"]) {
   const el = $(id), out = document.querySelector(`output[for=${id}]`);
-  el.addEventListener("input", () => { out.value = (+el.value).toFixed(2); editing = id; post({[id]: +el.value}); });
-  el.addEventListener("change", () => { editing = null; });
+  el.addEventListener("input", () => { out.value = (+el.value).toFixed(2); editing = id; pending[id] = +el.value; });
+  el.addEventListener("change", () => { editing = null; pending[id] = +el.value; });
 }
 document.querySelectorAll(".drums button").forEach(b =>
   b.addEventListener("click", () => post({drums: +b.dataset.v})));

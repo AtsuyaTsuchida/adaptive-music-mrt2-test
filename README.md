@@ -3,88 +3,60 @@
 環境音（ノイズ）を音楽に変換する実験プロジェクト。
 Google **Magenta RealTime 2**（MLXバックエンド、Apple Siliconネイティブ）を使用。
 
+環境音の中にある「音楽として解釈できる可能性」をAIで増幅・提示し、
+聴こえ方そのものを操作する — 生成レイヤー（AIの解釈）と原音レイヤー（現実）の
+バランスをリアルタイムで演奏するライブシステム。
+
 ## 構成
 
+- `scripts/live.py` + `live.html` — ライブ演奏モード（本体）
 - `docs/survey_environmental_sound_music.md` — 環境音→音楽のサーベイ（アート作品・研究・製品）
-- `samples/` — 環境音素材（Wikimedia Commons のCC音源、`*.ogg` が原本。出典は [CREDITS.md](CREDITS.md)）
-  - rain(雨+雷) / ocean(波) / subway(トロント地下鉄) / station(駅トンネル) / birds(鳥)
+- `samples/` — 環境音素材（Wikimedia Commons のCC/PD音源、`*.ogg`/`*.flac` が原本。出典は [CREDITS.md](CREDITS.md)）
+  - 短尺: rain(雨+雷) / ocean(波) / subway(トロント地下鉄) / station(駅トンネル) / birds(鳥)
+  - 長尺: rain_long(雷雨4分) / birds_long(夜明けのコーラス10分) / ocean_long(湖の波5.5分) / city_long(メキシコシティ5分, Félix Blume)
   - wav版は `scripts/prepare_samples.sh` で生成（リポジトリには含まない）
-- `scripts/audio2audio.py` — メイン実験。環境音→MusicCoCaスタイル埋め込み→生成
-- `scripts/stream.py` — 長尺ストリーム生成。stateを引き継ぎながらスタイル埋め込みをウェイポイント間で補間し、数分規模の連続した楽曲を生成（`--play`でライブ再生）
-- `emerge.html` — emergence可視化ページ（環境音⇄音楽メーター、ゲイン/w_audioカーブのタイムライン、スペクトログラム）
-- `scripts/live.py` + `live.html` — ライブ演奏モード。生成を止めずに w_audio・原音/生成ゲイン・drums・環境音ソース・プロンプトをブラウザから操作
-- `scripts/loopify.py` — 生成クリップを等パワークロスフェードでシームレスループ化
-- `listen.html` — 試聴ページ（原音と生成の比較＋リアルタイムビジュアライザー）。`python -m RangeHTTPServer 8240` で配信（`http.server`はRange非対応で長尺wavのシークが効かない）
-- `out/` — 生成結果（8秒クリップと `*_loop.wav` シームレスループ）
+- `out/` — `--record` 時のセッション録音（gitには含まない）
 
 ## セットアップ / 実行
 
 ```bash
 source .venv/bin/activate           # Python 3.12 + magenta-rt[mlx]
-python scripts/audio2audio.py       # 全実験を実行（mrt2_base, 8-bit）
-python scripts/stream.py            # 3分のストリーム生成（雨→地下鉄→波→鳥）
-python scripts/stream.py --play     # 生成しながらライブ再生（M3 Maxでほぼ1.0x）
-python scripts/loopify.py out/*.wav # ループ化
-```
-
-モデル本体は `~/Documents/Magenta/magenta-rt-v2/`（`MAGENTA_HOME`で変更可）。
-
-## audio2audioの仕組み（MRT2のPython API）
-
-MRT2の生成は **スタイル埋め込み条件付け**。`MusicCoCa.embed()` がテキストと
-音声（`Waveform`）を同一の768次元空間に埋め込むため:
-
-1. **A: audio-only** — 環境音の埋め込みをそのままstyleに → その音の「雰囲気」の音楽
-2. **B: blend** — 環境音埋め込みとテキストプロンプト埋め込みの加重平均 → 「雨っぽいアンビエントテクノ」等
-3. **C: blend + drums=1** — drums条件を立ててリズミックでループ向きの出力に
-
-入力音声の波形そのものを引き継ぐ継続生成（真のaudio continuation）はPython APIには
-無く、ライブのaudio-inジャムはC++アプリ（AUv3/Jamアプリ）側の機能。
-
-## 長尺ストリーム（stream.py）
-
-MRT2はフレーム単位（40ms）の自己回帰生成で、`generate()` が返す `state` を
-次の呼び出しに渡すと**音楽が途切れずに無限に続く**。ワンショット生成のモデル
-（Stable Audio等）と違い、スタイル埋め込みが「連続的な制御信号」になるのが本質:
-
-- **ウェイポイント**（時刻 + 環境音×テキストのブレンド + drums条件）を並べ、
-  チャンク（2秒）ごとに埋め込みを線形補間 → 曲が鳴り続けたままスタイルがモーフする
-- デフォルトのジャーニーは3分で「雨×テクノ → drums-in → 地下鉄×インダストリアル
-  → 波×アンビエントパッド → 鳥×ジャズ」と遷移
-- `--journey my.json` で任意のジャーニーを定義可（形式は `DEFAULT_JOURNEY` 参照）
-- 生成速度はM3 Maxでほぼ実時間（40ms/frame）なので `--play` でライブ演奏になる
-
-### emergence（rain_emerge ジャーニー）
-
-「環境音が徐々に音楽と混ざり、音楽的になっていく」構成。2レイヤーのミックス:
-
-- **原音レイヤー**: 生の雨の録音。`env_mix.gain` のカーブで徐々にフェードアウト（170秒で無音）
-- **生成レイヤー**: `gen_gain` で無音からフェードイン。スタイルは w_audio=1.0
-  （雨の埋め込みそのもの＝ドキュメンタリー）から 0.3（テキスト寄り＝音楽的）へ補間、
-  125秒からdrums=1
-
-```bash
-python scripts/stream.py --journey rain_emerge          # レンダリング
-open http://localhost:8240/emerge.html                  # 可視化つき試聴
-```
-
-`out/stream_<name>.json` にジャーニーのメタデータが出力され、`emerge.html` が
-これを読んで「環境音⇄音楽」メーター・ゲインカーブのタイムライン（クリックでシーク）・
-スペクトログラムを再生位置に同期して描画する。
-
-## ライブ演奏モード（live.py）
-
-emergenceのオートメーションを**手動リアルタイム操作**に置き換えたモード。
-
-```bash
+scripts/prepare_samples.sh          # 環境音サンプルを取得・変換（初回のみ）
 python scripts/live.py --record     # モデルロード後、音が出始める
 open http://localhost:8241          # コントロールパネル
 ```
 
-- 生成スレッドが1秒チャンクごとにパラメータを読み直す（反映まで約1〜3秒）
-- 操作できるもの: `w_audio`（環境音⇄テキストのブレンド）/ 原音・生成ゲイン /
-  drums（おまかせ・off・on）/ 環境音ソース切替 / テキストプロンプト書き換え
-- 埋め込み計算は別スレッド（プロンプト変更で音は止まらない。新埋め込みが
-  できるまで旧スタイルで演奏継続）
-- 音はデフォルト出力デバイスへ直接出る。`--record` で終了時に `out/live_*.wav` を保存
-- 注意: MLXはロードしたスレッドでしか推論できないため、モデルは生成スレッド内でロードする
+モデル本体は `~/Documents/Magenta/magenta-rt-v2/`（`MAGENTA_HOME`で変更可、
+`mrt models init && mrt models download mrt2_base` で取得）。
+
+## 仕組み
+
+聴こえる音は2レイヤーのミックス:
+
+1. **原音レイヤー** — 環境音の録音そのもの（ループ再生）
+2. **生成レイヤー** — MRT2のストリーム生成。40msフレーム単位の自己回帰で、
+   `state` を引き継ぐため音楽は途切れない
+
+生成のスタイル条件は **MusicCoCa埋め込み**（audio/textを同一768次元空間へ）の
+加重平均で、これがリアルタイム操作の中心:
+
+| パラメータ | 役割 |
+|---|---|
+| `w_audio` | 環境音の埋め込み(1.0) ⇄ テキストプロンプト(0.0) のブレンド。Musicalityの操作軸 |
+| `env_gain` / `gen_gain` | 原音/生成レイヤーの音量（再生側で適用、反映〜0.25秒） |
+| `drums` | 生成へのリズム指示（auto / off / on） |
+| `env` | 環境音ソース切替（原音レイヤーと埋め込みの両方が切り替わる） |
+| `prompt` | テキストプロンプト（w_audio < 1.0 で効く） |
+
+### 設計メモ
+
+- **MLXはモデルをロードしたスレッドでしか推論できない**（`There is no Stream(gpu, 1)`）
+  → モデルは生成スレッド内でロード
+- **埋め込み計算は専用ワーカースレッド** — プロンプト/ソース変更で生成を止めない。
+  新埋め込みができるまで旧スタイルで演奏継続。全サンプルは起動時にプリフェッチ
+- **ミックスは再生側** — 原音レイヤーはただのファイル再生なので生成に依存させない。
+  生成が実時間を割ってもAIレイヤーだけがフェードアウトし、環境音は途切れない
+  （解釈が後退して現実が残る、という劣化の仕方）
+- 生成速度はM3 Maxで実時間の0.85〜1.03倍（マシン負荷・電源状態に依存）。
+  **バッテリー駆動はGPUが絞られて実時間を割る**ので電源接続を推奨
+- 出力デバイスはストリーム開始時に固定。AirPods等に切り替えたら再起動が必要

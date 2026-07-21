@@ -39,8 +39,8 @@ FPS = 25
 CHUNK_FRAMES = 50           # 2s per chunk: fewer calls = less overhead (1s chunks ran ~0.9x)
 CHUNK_SAMPLES = SR * CHUNK_FRAMES // FPS
 MAX_STYLE_SECONDS = 20
-QUEUE_CHUNKS = 3            # generation self-paces against playback via this buffer
-PREBUFFER_CHUNKS = 2        # wait for this many chunks before (re)starting playback
+QUEUE_CHUNKS = 4            # generation self-paces against playback via this buffer
+PREBUFFER_CHUNKS = 3        # wait for this many chunks before (re)starting playback
 
 PARAMS = {
     "playing": True,
@@ -82,21 +82,21 @@ class EnvPlayer:
     def __init__(self):
         self.cache, self.pos, self.name = {}, 0, None
 
-    def chunk(self, name):
+    def chunk(self, name, n):
         if name not in self.cache:
             x = Waveform.from_file(str(SAMPLES / name)).samples
             if x.ndim == 1:
                 x = np.stack([x, x], axis=1)
-            self.cache[name] = x
+            self.cache[name] = x.astype(np.float32)
         if name != self.name:
             self.name, self.pos = name, 0
         x = self.cache[name]
-        idx = (self.pos + np.arange(CHUNK_SAMPLES)) % len(x)
-        self.pos = (self.pos + CHUNK_SAMPLES) % len(x)
+        idx = (self.pos + np.arange(n)) % len(x)
+        self.pos = (self.pos + n) % len(x)
         return x[idx]
 
 
-def generator(audio_q, record):
+def generator(audio_q):
     # MLX streams are bound to the thread that created them, so the model MUST
     # be loaded and run entirely inside this thread.
     t0 = time.time()
@@ -141,10 +141,16 @@ def generator(audio_q, record):
         request(PARAMS["prompt"])
     while not (PARAMS["env"] in emb_cache and PARAMS["prompt"] in emb_cache):
         time.sleep(0.1)
+    # prefetch every sample so runtime source switches never trigger an embed
+    # (each embed costs seconds of CPU and can starve generation below realtime)
+    for p in sorted(SAMPLES.glob("*.wav")):
+        request(p.name)
 
-    env_player = EnvPlayer()
+    # The generator emits RAW generated chunks only. The env layer and all gain
+    # mixing live in the player: the env recording costs nothing to play, so it
+    # must never depend on generation keeping up — when generation falls behind,
+    # only the gen layer fades out and reality (the recording) carries on.
     state = None
-    prev_gains = None
     emb_a = emb_t = None
     while not STOP.is_set():
         with LOCK:
@@ -160,68 +166,81 @@ def generator(audio_q, record):
             style=emb, frames=CHUNK_FRAMES, state=state,
             drums=None if p["drums"] == -1 else [p["drums"]],
         )
-        gen = wav.samples
-        env = env_player.chunk(p["env"])
-
-        # per-chunk linear gain ramps (prev -> target) to avoid zipper noise
-        if prev_gains is None:
-            prev_gains = (p["env_gain"], p["gen_gain"])
-        ramp = np.linspace(0, 1, CHUNK_SAMPLES)[:, None]
-        g_env = prev_gains[0] + (p["env_gain"] - prev_gains[0]) * ramp
-        g_gen = prev_gains[1] + (p["gen_gain"] - prev_gains[1]) * ramp
-        prev_gains = (p["env_gain"], p["gen_gain"])
-
-        y = np.clip(gen * g_gen + env * g_env, -1.0, 1.0).astype(np.float32)
         with LOCK:
             STATUS["chunks"] += 1
-            STATUS["env_rms"] = float(np.sqrt(((env * g_env) ** 2).mean()))
-            STATUS["gen_rms"] = float(np.sqrt(((gen * g_gen) ** 2).mean()))
             STATUS["applied"] = p
-        if record is not None:
-            record.append(y)
-        audio_q.put(y)  # blocks when QUEUE_CHUNKS ahead -> self-pacing
+        audio_q.put(wav.samples.astype(np.float32))  # blocks when full -> self-pacing
     audio_q.put(None)
 
 
-def player(audio_q):
+def player(audio_q, record):
+    """Mixes at playback time: env layer straight from file (never stalls),
+    gen layer from the queue (fades out during rebuffering)."""
     import sounddevice as sd
     block = SR // 4
-    buf = np.zeros((0, 2), dtype=np.float32)
-    filling = True  # rebuffering: play silence until PREBUFFER_CHUNKS are queued
+    env_player = EnvPlayer()
+    gen_buf = np.zeros((0, 2), dtype=np.float32)
+    filling = True  # gen layer rebuffering; env keeps playing throughout
+    prev = None     # previous (env_gain, gen_gain) for per-block ramps
     with sd.OutputStream(samplerate=SR, channels=2, dtype="float32") as out:
         while True:
             with LOCK:
-                playing = PARAMS["playing"]
-            if not playing:
-                # paused: emit silence, don't consume the queue. The bounded queue
-                # then blocks the generator, so generation pauses too; resume is
-                # instant because the buffer stays full.
+                p = dict(PARAMS)
+            if not p["playing"]:
+                # paused: silence, don't consume. The bounded queue blocks the
+                # generator too; resume is instant because the buffer stays full.
                 out.write(np.zeros((block, 2), dtype=np.float32))
                 continue
+
             if filling and audio_q.qsize() >= PREBUFFER_CHUNKS:
                 filling = False
             if not filling:
-                while len(buf) < block:
+                while len(gen_buf) < block:
                     try:
                         item = audio_q.get_nowait()
                     except queue.Empty:
                         break
                     if item is None:
                         return
-                    buf = np.concatenate([buf, item])
+                    gen_buf = np.concatenate([gen_buf, item])
+
+            if len(gen_buf) >= block:
+                gen = gen_buf[:block]
+                gen_buf = gen_buf[block:]
+            else:
+                # gen ran dry: fade out whatever remains, then rebuffer.
+                # The env layer below is untouched — reality keeps playing.
+                if not filling:
+                    filling = True
+                    with LOCK:
+                        if STATUS["chunks"] > PREBUFFER_CHUNKS:
+                            STATUS["underruns"] += 1
+                gen = np.zeros((block, 2), dtype=np.float32)
+                if len(gen_buf):
+                    fade = np.linspace(1, 0, len(gen_buf))[:, None]
+                    gen[: len(gen_buf)] = gen_buf * fade
+                    gen_buf = gen_buf[:0]
+
+            env = env_player.chunk(p["env"], block)
+
+            # per-block linear gain ramps (prev -> target) avoid zipper noise;
+            # gains act here, so sliders take effect in ~0.25s, not buffer-delay
+            if prev is None:
+                prev = (p["env_gain"], p["gen_gain"])
+            ramp = np.linspace(0, 1, block)[:, None]
+            g_env = prev[0] + (p["env_gain"] - prev[0]) * ramp
+            g_gen = prev[1] + (p["gen_gain"] - prev[1]) * ramp
+            prev = (p["env_gain"], p["gen_gain"])
+
+            y = np.clip(gen * g_gen + env * g_env, -1.0, 1.0).astype(np.float32)
             with LOCK:
                 STATUS["buffer"] = round(
-                    (audio_q.qsize() * CHUNK_SAMPLES + len(buf)) / SR, 1)
-            if len(buf) >= block:
-                out.write(np.ascontiguousarray(buf[:block]))
-                buf = buf[block:]
-            else:
-                # ran dry: count it once, then hold silence until the buffer refills
-                with LOCK:
-                    if not filling and STATUS["chunks"] > PREBUFFER_CHUNKS:
-                        STATUS["underruns"] += 1
-                filling = True
-                out.write(np.zeros((block, 2), dtype=np.float32))
+                    (audio_q.qsize() * CHUNK_SAMPLES + len(gen_buf)) / SR, 1)
+                STATUS["env_rms"] = float(np.sqrt(((env * g_env) ** 2).mean()))
+                STATUS["gen_rms"] = float(np.sqrt(((gen * g_gen) ** 2).mean()))
+            if record is not None:
+                record.append(y)
+            out.write(np.ascontiguousarray(y))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -272,8 +291,8 @@ def main():
 
     record = [] if args.record else None
     audio_q = queue.Queue(maxsize=QUEUE_CHUNKS)
-    threading.Thread(target=generator, args=(audio_q, record), daemon=True).start()
-    threading.Thread(target=player, args=(audio_q,), daemon=True).start()
+    threading.Thread(target=generator, args=(audio_q,), daemon=True).start()
+    threading.Thread(target=player, args=(audio_q, record), daemon=True).start()
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     def _term(*_a):
