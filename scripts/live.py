@@ -253,10 +253,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path in ("/", "/live.html"):
-            body = (ROOT / "live.html").read_bytes()
+        if self.path == "/":
+            # minimal bootstrap document — the whole UI is built by live.js
+            body = b'<!doctype html><meta charset="utf-8"><script defer src="/live.js"></script>'
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/live.js":
+            body = (ROOT / "live.js").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
