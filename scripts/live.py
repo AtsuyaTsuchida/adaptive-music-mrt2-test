@@ -1,21 +1,6 @@
-"""Live performance mode: stream Magenta RT 2 while tweaking the mix in real time.
+"""Magenta RT 2 live mode: env recording + generated layer, mixed in realtime.
 
-A generator thread produces 1s chunks (state carried over, so the music never
-stops) and re-reads the shared params every chunk; a browser control panel
-(live.html, served on --port) changes them mid-stream:
-
-  w_audio    blend between env-audio embedding and text embedding (1.0 = pure env)
-  env_gain   raw environmental recording layer volume
-  gen_gain   generated layer volume
-  drums      -1 masked / 0 off / 1 on
-  env        which sample the env layer + audio embedding use
-  prompt     text prompt (re-embedded on change)
-
-Audio goes straight to the default output device (sounddevice).
-
-Usage:
-  python scripts/live.py            # -> open http://localhost:8241
-  python scripts/live.py --record   # also dump the session to out/live_<n>.wav on exit
+python scripts/live.py [--record]  ->  control panel at http://localhost:8241
 """
 import argparse
 import json
@@ -36,11 +21,11 @@ OUT = ROOT / "out"
 
 SR = 48000
 FPS = 25
-CHUNK_FRAMES = 50           # 2s per chunk: fewer calls = less overhead (1s chunks ran ~0.9x)
+CHUNK_FRAMES = 50           # 2s; 1s chunks had too much per-call overhead
 CHUNK_SAMPLES = SR * CHUNK_FRAMES // FPS
-MAX_STYLE_SECONDS = 20
-QUEUE_CHUNKS = 4            # generation self-paces against playback via this buffer
-PREBUFFER_CHUNKS = 3        # wait for this many chunks before (re)starting playback
+MAX_STYLE_SECONDS = 20      # audio fed to MusicCoCa
+QUEUE_CHUNKS = 4
+PREBUFFER_CHUNKS = 3
 
 PARAMS = {
     "playing": True,
@@ -97,8 +82,7 @@ class EnvPlayer:
 
 
 def generator(audio_q):
-    # MLX streams are bound to the thread that created them, so the model MUST
-    # be loaded and run entirely inside this thread.
+    # MLX: inference only works on the thread that loaded the model
     t0 = time.time()
     print("Loading MagentaRT2SystemMlxfn (mrt2_base)...", flush=True)
     mrt = MagentaRT2SystemMlxfn(size="mrt2_base")
@@ -106,10 +90,7 @@ def generator(audio_q):
     with LOCK:
         STATUS["ready"] = True
 
-    # Embeds run in their own worker thread (MusicCoCa is TFLite, not MLX, so it
-    # is safe off this thread): a prompt/source change must NOT stall generation,
-    # or the few-second embed drains the buffer and the audio glitches. Until the
-    # new embedding is ready we keep playing with the previous style.
+    # embeds take seconds -> run off-thread, keep using the old style until ready
     emb_cache, requested = {}, set()
     embed_q = queue.Queue()
 
@@ -135,21 +116,15 @@ def generator(audio_q):
             requested.add(key)
             embed_q.put(key)
 
-    # initial embeddings must exist before the first chunk
     with LOCK:
         request(PARAMS["env"])
         request(PARAMS["prompt"])
     while not (PARAMS["env"] in emb_cache and PARAMS["prompt"] in emb_cache):
         time.sleep(0.1)
-    # prefetch every sample so runtime source switches never trigger an embed
-    # (each embed costs seconds of CPU and can starve generation below realtime)
-    for p in sorted(SAMPLES.glob("*.wav")):
+    for p in sorted(SAMPLES.glob("*.wav")):  # pre-embed so source switches are instant
         request(p.name)
 
-    # The generator emits RAW generated chunks only. The env layer and all gain
-    # mixing live in the player: the env recording costs nothing to play, so it
-    # must never depend on generation keeping up — when generation falls behind,
-    # only the gen layer fades out and reality (the recording) carries on.
+    # raw gen chunks only; env layer and gains are mixed in the player
     state = None
     emb_a = emb_t = None
     while not STOP.is_set():
@@ -169,26 +144,24 @@ def generator(audio_q):
         with LOCK:
             STATUS["chunks"] += 1
             STATUS["applied"] = p
-        audio_q.put(wav.samples.astype(np.float32))  # blocks when full -> self-pacing
+        audio_q.put(wav.samples.astype(np.float32))  # blocks when full
     audio_q.put(None)
 
 
 def player(audio_q, record):
-    """Mixes at playback time: env layer straight from file (never stalls),
-    gen layer from the queue (fades out during rebuffering)."""
+    """Playback-side mix: env layer never stalls, gen layer fades out when starved."""
     import sounddevice as sd
     block = SR // 4
     env_player = EnvPlayer()
     gen_buf = np.zeros((0, 2), dtype=np.float32)
-    filling = True  # gen layer rebuffering; env keeps playing throughout
-    prev = None     # previous (env_gain, gen_gain) for per-block ramps
+    filling = True
+    prev = None
     with sd.OutputStream(samplerate=SR, channels=2, dtype="float32") as out:
         while True:
             with LOCK:
                 p = dict(PARAMS)
             if not p["playing"]:
-                # paused: silence, don't consume. The bounded queue blocks the
-                # generator too; resume is instant because the buffer stays full.
+                # don't consume while paused -> full queue blocks the generator too
                 out.write(np.zeros((block, 2), dtype=np.float32))
                 continue
 
@@ -208,8 +181,7 @@ def player(audio_q, record):
                 gen = gen_buf[:block]
                 gen_buf = gen_buf[block:]
             else:
-                # gen ran dry: fade out whatever remains, then rebuffer.
-                # The env layer below is untouched — reality keeps playing.
+                # gen starved: fade out and rebuffer (env keeps playing)
                 if not filling:
                     filling = True
                     with LOCK:
@@ -223,8 +195,7 @@ def player(audio_q, record):
 
             env = env_player.chunk(p["env"], block)
 
-            # per-block linear gain ramps (prev -> target) avoid zipper noise;
-            # gains act here, so sliders take effect in ~0.25s, not buffer-delay
+            # ramp gains within the block to avoid zipper noise
             if prev is None:
                 prev = (p["env_gain"], p["gen_gain"])
             ramp = np.linspace(0, 1, block)[:, None]
@@ -254,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/":
-            # minimal bootstrap document — the whole UI is built by live.js
+            # UI is built entirely by live.js (defer: body must exist first)
             body = b'<!doctype html><meta charset="utf-8"><script defer src="/live.js"></script>'
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -304,7 +275,7 @@ def main():
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     def _term(*_a):
-        raise KeyboardInterrupt  # so SIGTERM also reaches the finally: (saves --record)
+        raise KeyboardInterrupt  # let SIGTERM save --record too
     signal.signal(signal.SIGTERM, _term)
     print(f"Live control: http://localhost:{args.port}", flush=True)
     try:
