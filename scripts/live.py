@@ -42,6 +42,20 @@ LOCK = threading.Lock()
 STOP = threading.Event()
 BACKEND = "mlx" if platform.system() == "Darwin" else "jax"  # --backend overrides
 
+# browser listeners: each /stream connection gets its own queue of PCM blocks
+SUBSCRIBERS = set()
+SUB_LOCK = threading.Lock()
+
+
+def broadcast(pcm):
+    with SUB_LOCK:
+        subs = list(SUBSCRIBERS)
+    for q in subs:
+        try:
+            q.put_nowait(pcm)
+        except queue.Full:
+            pass  # slow client: drop the block rather than stall everyone
+
 
 def load_model():
     # mlx = Apple Silicon (exported .mlxfn), jax = NVIDIA GPU (WSL2/Linux)
@@ -158,21 +172,41 @@ def generator(audio_q):
     audio_q.put(None)
 
 
-def player(audio_q, record):
-    """Playback-side mix: env layer never stalls, gen layer fades out when starved."""
-    import sounddevice as sd
+def player(audio_q, record, use_device=True):
+    """Playback-side mix: env layer never stalls, gen layer fades out when starved.
+    Output goes to the local device (if any) and to all /stream listeners."""
     block = SR // 4
     env_player = EnvPlayer()
     gen_buf = np.zeros((0, 2), dtype=np.float32)
     filling = True
     prev = None
-    with sd.OutputStream(samplerate=SR, channels=2, dtype="float32") as out:
-        while True:
+
+    out = None
+    if use_device:
+        try:
+            import sounddevice as sd
+            out = sd.OutputStream(samplerate=SR, channels=2, dtype="float32")
+            out.start()
+        except Exception as e:
+            print(f"no audio device ({e}) -> browser streaming only", flush=True)
+    next_t = time.monotonic()
+
+    def emit(y):
+        # local device blocks and paces us; without one, pace by wall clock
+        nonlocal next_t
+        broadcast((np.clip(y, -1, 1) * 32767).astype(np.int16).tobytes())
+        if out is not None:
+            out.write(np.ascontiguousarray(y))
+        else:
+            next_t += block / SR
+            time.sleep(max(0.0, next_t - time.monotonic()))
+
+    while True:
             with LOCK:
                 p = dict(PARAMS)
             if not p["playing"]:
                 # don't consume while paused -> full queue blocks the generator too
-                out.write(np.zeros((block, 2), dtype=np.float32))
+                emit(np.zeros((block, 2), dtype=np.float32))
                 continue
 
             if filling and audio_q.qsize() >= PREBUFFER_CHUNKS:
@@ -221,7 +255,7 @@ def player(audio_q, record):
                 STATUS["gen_rms"] = float(np.sqrt(((gen * g_gen) ** 2).mean()))
             if record is not None:
                 record.append(y)
-            out.write(np.ascontiguousarray(y))
+            emit(y)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -249,6 +283,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif self.path == "/stream":
+            # endless raw PCM (s16le, 48kHz stereo); one queue per listener
+            q = queue.Queue(maxsize=40)
+            with SUB_LOCK:
+                SUBSCRIBERS.add(q)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                while True:
+                    self.wfile.write(q.get())
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with SUB_LOCK:
+                    SUBSCRIBERS.discard(q)
         elif self.path == "/state":
             with LOCK:
                 self._json({"params": dict(PARAMS), "status": dict(STATUS)})
@@ -279,13 +330,16 @@ def main():
     ap.add_argument("--record", action="store_true", help="save session to out/ on exit")
     ap.add_argument("--backend", choices=["mlx", "jax"], default=BACKEND,
                     help="mlx=Apple Silicon, jax=NVIDIA (default: by platform)")
+    ap.add_argument("--no-audio", action="store_true",
+                    help="skip the local audio device; listen via the browser")
     args = ap.parse_args()
     BACKEND = args.backend
 
     record = [] if args.record else None
     audio_q = queue.Queue(maxsize=QUEUE_CHUNKS)
     threading.Thread(target=generator, args=(audio_q,), daemon=True).start()
-    threading.Thread(target=player, args=(audio_q, record), daemon=True).start()
+    threading.Thread(target=player, args=(audio_q, record, not args.no_audio),
+                     daemon=True).start()
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     def _term(*_a):

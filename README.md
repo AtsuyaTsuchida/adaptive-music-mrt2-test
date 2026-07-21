@@ -27,6 +27,25 @@ open http://localhost:8241          # コントロールパネル
 モデル本体は `~/Documents/Magenta/magenta-rt-v2/`（`MAGENTA_HOME`で変更可、
 `mrt models init && mrt models download mrt2_base` で取得）。
 
+## ブラウザで聴く（リモートマシンで動かす場合）
+
+サーバーの音声デバイスに出す代わりに、コントロールパネルの **🔊 listen here** で
+ミックスをブラウザ再生できる（`/stream` が生PCM s16le 48kHz stereoを配信し、
+Web Audioでスケジュール再生。複数リスナー可、遅いクライアントはブロック単位でドロップ）。
+
+リモート（例: bowie）で動かすときの典型構成:
+
+```bash
+# リモート側: 音声デバイス不要
+python scripts/live.py --no-audio --record
+
+# 手元のマシン: ポートフォワードして
+ssh -L 8241:localhost:8241 user@remote
+# ブラウザで http://localhost:8241 を開き 🔊 listen here
+```
+
+音声デバイスがないマシンでは `--no-audio` なしでも自動でストリーミング専用にフォールバックする。
+
 ## Windows (NVIDIA GPU) で動かす
 
 live.py はバックエンド切替に対応: macOS では MLX、それ以外では JAX が自動選択される

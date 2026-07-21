@@ -37,6 +37,8 @@ const el = (tag, props = {}, ...children) => {
 const stat = el("div", {id: "stat", textContent: "connecting…"});
 const playpause = el("button", {id: "playpause", textContent: "…",
   style: "font-size:1.05rem; min-width:96px; cursor:pointer"});
+const listen = el("button", {id: "listen", textContent: "🔊 listen here",
+  style: "font-size:1.05rem; cursor:pointer"});
 
 const level = (id, label, colorVar) => el("div", {className: "levels"},
   el("span", {textContent: label, style: `color:var(${colorVar})`}),
@@ -66,7 +68,7 @@ document.body.append(
   el("h1", {textContent: "live — realtime synthesis & balance control"}),
   el("div", {className: "panel"},
     el("div", {style: "display:flex; gap:.8rem; align-items:center; margin-bottom:.5rem"},
-      playpause, stat),
+      playpause, listen, stat),
     level("envbar", "env level", "--env"),
     level("genbar", "gen level", "--gen")),
   el("div", {className: "panel"},
@@ -99,6 +101,46 @@ promptInput.addEventListener("change", () => post({prompt: promptInput.value}));
 
 fetch("/sources").then(r => r.json()).then(list =>
   envSelect.append(...list.map(s => el("option", {textContent: s}))));
+
+// browser playback of /stream (raw s16le 48kHz stereo via fetch + Web Audio)
+let audioCtx = null, streamAbort = null;
+listen.addEventListener("click", async () => {
+  if (audioCtx) {
+    streamAbort.abort();
+    return;
+  }
+  audioCtx = new AudioContext({sampleRate: 48000});
+  streamAbort = new AbortController();
+  listen.textContent = "🔇 stop listening";
+  let playTime = 0, carry = new Uint8Array(0);
+  try {
+    const res = await fetch("/stream", {signal: streamAbort.signal});
+    const reader = res.body.getReader();
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      let bytes = new Uint8Array(carry.length + value.length);
+      bytes.set(carry); bytes.set(value, carry.length);
+      const usable = bytes.length - (bytes.length % 4);  // 4 bytes per stereo frame
+      carry = bytes.slice(usable);
+      if (!usable) continue;
+      const i16 = new Int16Array(bytes.buffer, 0, usable / 2);
+      const n = i16.length / 2;
+      const buf = audioCtx.createBuffer(2, n, 48000);
+      const L = buf.getChannelData(0), R = buf.getChannelData(1);
+      for (let i = 0; i < n; i++) { L[i] = i16[2 * i] / 32768; R[i] = i16[2 * i + 1] / 32768; }
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      const now = audioCtx.currentTime;
+      if (playTime < now + 0.05) playTime = now + 0.2;  // (re)prime with a small cushion
+      src.start(playTime);
+      playTime += n / 48000;
+    }
+  } catch {}
+  if (audioCtx) { audioCtx.close(); audioCtx = null; streamAbort = null; }
+  listen.textContent = "🔊 listen here";
+});
 async function poll() {
   try {
     const {params, status} = await (await fetch("/state")).json();
