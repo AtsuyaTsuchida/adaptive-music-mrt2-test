@@ -28,6 +28,32 @@ open http://localhost:8241          # コントロールパネル
 モデル本体は `~/Documents/Magenta/magenta-rt-v2/`（`MAGENTA_HOME`で変更可、
 `mrt models init && mrt models download mrt2_base` で取得）。
 
+## Windows (NVIDIA GPU) で動かす
+
+live.py はバックエンド切替に対応: macOS では MLX、それ以外では JAX が自動選択される
+（`--backend mlx|jax` で明示も可）。JAXのGPU実行はネイティブWindowsでは非対応のため
+**WSL2 (Ubuntu) + CUDA** を使う:
+
+1. Windows側: NVIDIAドライバ + WSL2 + Ubuntu を導入（`wsl --install`）
+2. WSL内でセットアップ:
+   ```bash
+   git clone https://github.com/AtsuyaTsuchida/env-sound-music.git && cd env-sound-music
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install "magenta-rt[jax]" "jax[cuda12]" sounddevice
+   sudo apt install ffmpeg libportaudio2
+   scripts/prepare_samples.sh
+   mrt models init && mrt models download mrt2_base
+   python scripts/live.py --record          # backend=jax が自動選択される
+   ```
+3. ブラウザ（Windows側でよい）で http://localhost:8241 を開く
+
+補足:
+- 音声出力は WSLg (Windows 11) の PulseAudio 経由でそのまま出る。出ない場合は
+  `pactl info` でPulseAudioの疎通を確認
+- リアルタイム生成には十分なGPUが必要（8GB VRAM以上推奨）。実時間を割る場合は
+  音切れ時に生成レイヤーだけがフェードアウトし環境音は続く設計
+- JAX側は初回起動時にチェックポイントの取得・コンパイルで時間がかかることがある
+
 ## 仕組み
 
 聴こえる音は2レイヤーのミックス:

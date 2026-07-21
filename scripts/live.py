@@ -4,6 +4,7 @@ python scripts/live.py [--record]  ->  control panel at http://localhost:8241
 """
 import argparse
 import json
+import platform
 import queue
 import signal
 import threading
@@ -13,7 +14,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from magenta_rt.audio import Waveform
-from magenta_rt.mlx.system import MagentaRT2SystemMlxfn
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = ROOT / "samples"
@@ -40,6 +40,16 @@ STATUS = {"ready": False, "chunks": 0, "underruns": 0, "buffer": 0,
           "env_rms": 0.0, "gen_rms": 0.0, "applied": dict(PARAMS)}
 LOCK = threading.Lock()
 STOP = threading.Event()
+BACKEND = "mlx" if platform.system() == "Darwin" else "jax"  # --backend overrides
+
+
+def load_model():
+    # mlx = Apple Silicon (exported .mlxfn), jax = NVIDIA GPU (WSL2/Linux)
+    if BACKEND == "mlx":
+        from magenta_rt.mlx.system import MagentaRT2SystemMlxfn
+        return MagentaRT2SystemMlxfn(size="mrt2_base")
+    from magenta_rt.jax.system import MagentaRT2System
+    return MagentaRT2System(size="mrt2_base")
 
 
 def set_params(update):
@@ -84,8 +94,8 @@ class EnvPlayer:
 def generator(audio_q):
     # MLX: inference only works on the thread that loaded the model
     t0 = time.time()
-    print("Loading MagentaRT2SystemMlxfn (mrt2_base)...", flush=True)
-    mrt = MagentaRT2SystemMlxfn(size="mrt2_base")
+    print(f"Loading mrt2_base ({BACKEND})...", flush=True)
+    mrt = load_model()
     print(f"Model ready in {time.time()-t0:.1f}s", flush=True)
     with LOCK:
         STATUS["ready"] = True
@@ -263,10 +273,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global BACKEND
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8241)
     ap.add_argument("--record", action="store_true", help="save session to out/ on exit")
+    ap.add_argument("--backend", choices=["mlx", "jax"], default=BACKEND,
+                    help="mlx=Apple Silicon, jax=NVIDIA (default: by platform)")
     args = ap.parse_args()
+    BACKEND = args.backend
 
     record = [] if args.record else None
     audio_q = queue.Queue(maxsize=QUEUE_CHUNKS)
