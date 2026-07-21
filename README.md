@@ -61,7 +61,7 @@ so use **WSL2 (Ubuntu) + CUDA**:
 1. Windows side: NVIDIA driver + WSL2 + Ubuntu (`wsl --install`)
 2. Inside WSL:
    ```bash
-   git clone https://github.com/AtsuyaTsuchida/env-sound-music.git && cd env-sound-music
+   git clone https://github.com/AtsuyaTsuchida/adaptive-music-mrt2-test.git && cd env-sound-music
    python3 -m venv .venv && source .venv/bin/activate
    pip install "magenta-rt[jax]" "jax[cuda12]" sounddevice
    sudo apt install ffmpeg libportaudio2
