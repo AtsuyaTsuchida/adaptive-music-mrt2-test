@@ -1,7 +1,3 @@
-// live.js — the entire control panel UI, built programmatically (no HTML file).
-// live.py serves a 2-line bootstrap document that loads this script.
-
-// ---------- styles ----------
 document.title = "live — realtime control";
 document.head.append(Object.assign(document.createElement("style"), {textContent: `
   :root { --env: #4da3ff; --gen: #ff9b45; }
@@ -29,8 +25,6 @@ document.head.append(Object.assign(document.createElement("style"), {textContent
   #envbar div { background: var(--env); } #genbar div { background: var(--gen); }
   #stat { color: #777; font-size: .75rem; font-variant-numeric: tabular-nums; }
 `}));
-
-// ---------- tiny DOM builder ----------
 const el = (tag, props = {}, ...children) => {
   const n = document.createElement(tag);
   const {style, dataset, ...rest} = props;
@@ -40,8 +34,6 @@ const el = (tag, props = {}, ...children) => {
   n.append(...children);
   return n;
 };
-
-// ---------- structure ----------
 const stat = el("div", {id: "stat", textContent: "connecting…"});
 const playpause = el("button", {id: "playpause", textContent: "…",
   style: "font-size:1.05rem; min-width:96px; cursor:pointer"});
@@ -85,13 +77,9 @@ document.body.append(
     el("div", {className: "ctl"}, el("label", {textContent: "env source"}), envSelect, el("span")),
     el("div", {className: "ctl"}, el("label", {textContent: "text prompt"}), promptInput, el("span"))),
 );
-
-// ---------- logic ----------
 const $ = id => document.getElementById(id);
 const post = obj => fetch("/set", {method: "POST", body: JSON.stringify(obj)});
-let editing = null; // don't fight the user while dragging
-
-// throttle slider drags to ~4 posts/s (each input event would otherwise POST)
+let editing = null;
 const pending = {};
 setInterval(() => {
   const keys = Object.keys(pending);
@@ -111,8 +99,6 @@ promptInput.addEventListener("change", () => post({prompt: promptInput.value}));
 
 fetch("/sources").then(r => r.json()).then(list =>
   envSelect.append(...list.map(s => el("option", {textContent: s}))));
-
-// ---------- state polling ----------
 async function poll() {
   try {
     const {params, status} = await (await fetch("/state")).json();
