@@ -66,7 +66,8 @@ so use **WSL2 (Ubuntu) + CUDA**:
    pip install "magenta-rt[jax]" "jax[cuda12]" sounddevice
    sudo apt install ffmpeg libportaudio2
    scripts/prepare_samples.sh
-   mrt models init && mrt models download mrt2_base
+   mrt models init
+   mrt checkpoints download mrt2_base.safetensors   # JAX weights (mrt models download = MLX only)
    python scripts/live.py --record          # backend=jax is selected automatically
    ```
 3. Open http://localhost:8241 in a browser (the Windows side is fine)
