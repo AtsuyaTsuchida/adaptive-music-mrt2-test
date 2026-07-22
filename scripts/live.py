@@ -34,7 +34,7 @@ PARAMS = {
     "gen_gain": 0.3,
     "drums": -1,
     "env": "rain_long.wav",
-    "prompt": "ambient techno with deep sub bass, hypnotic",
+    "prompt": "Slowly evolving atmospheric ambient music derived from the incoming environmental sound.",
 }
 STATUS = {"ready": False, "chunks": 0, "underruns": 0, "buffer": 0,
           "env_rms": 0.0, "gen_rms": 0.0, "applied": dict(PARAMS)}
