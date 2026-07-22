@@ -1,5 +1,7 @@
 # Adaptive Music - Magenta Realtime 2 Test
 
+*English below / [日本語はこちら](#日本語)*
+
 An experiment in turning environmental sound (noise) into music, built on
 Google **Magenta RealTime 2** (MLX backend, native on Apple Silicon).
 
@@ -133,3 +135,125 @@ control:
   keep the machine plugged in
 - The output device is fixed when the stream opens; switching to AirPods etc.
   requires a restart
+
+---
+
+# 日本語
+
+環境音（ノイズ）を音楽に変換する実験プロジェクト。
+Google **Magenta RealTime 2**（Apple SiliconではMLXバックエンドでネイティブ動作）を使用。
+
+音楽で環境を覆い隠す（マスキング）のではなく、環境音の中に潜む「音楽的解釈」を
+AIで増幅する——原音（現実）と生成レイヤー（AIの解釈）のバランスを
+リアルタイムで操作するライブ楽器。
+
+## 構成
+
+- `scripts/live.py` + `live.js` — ライブ演奏システム本体。UIはJSのみで構築（HTMLファイルなし）
+- `samples/` — 環境音素材（Wikimedia CommonsのCC/PD音源。`*.ogg`/`*.flac`が原本、出典は [CREDITS.md](CREDITS.md)）
+  - rain_long（雷雨 4分）/ birds_long（夜明けのコーラス 10分）/
+    ocean_long（湖の波 5.5分）/ city_long（メキシコシティ 5分、Félix Blume）
+  - wav版は `scripts/prepare_samples.sh` で生成（リポジトリには含まない）
+- `out/` — `--record` 時のセッション録音（リポジトリには含まない）
+
+## セットアップ / 実行（macOS, Apple Silicon）
+
+必要環境: Apple SiliconのMac、Python 3.11+（下記の[uv](https://docs.astral.sh/uv/)が3.12を自動取得）、
+ffmpeg（`brew install ffmpeg`）、モデル用に約4GBのディスク。
+
+```bash
+git clone https://github.com/AtsuyaTsuchida/adaptive-music-mrt2-test.git
+cd adaptive-music-mrt2-test
+
+# 環境構築（Pythonが3.11+なら素の python3 -m venv でも可）
+curl -LsSf https://astral.sh/uv/install.sh | sh   # uvが無ければ
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install "magenta-rt[mlx]==2.0.2" sounddevice==0.5.5
+
+scripts/prepare_samples.sh                        # サンプル取得・変換（初回のみ）
+mrt models init && mrt models download mrt2_base  # モデル重み（約4GB）
+
+python scripts/live.py --record                   # モデルロード後に音が出始める
+open http://localhost:8241                        # コントロールパネル
+```
+
+モデル重みは `~/Documents/Magenta/magenta-rt-v2/` に置かれる（`MAGENTA_HOME`で変更可）。
+**必ず電源に接続すること** — バッテリー駆動時はGPUが絞られ実時間を割る。
+
+## ブラウザで聴く（リモートマシンで動かす場合）
+
+サーバーの音声デバイスの代わりに、パネルの **listen here** ボタンでミックスを
+ブラウザ再生できる（`/stream` が生PCM s16le 48kHz stereoをチャンク転送し、
+Web Audioで再生。複数リスナー対応、遅いクライアントはブロック単位でドロップ）。
+
+```bash
+# リモート側: 音声デバイス不要
+python scripts/live.py --no-audio --record
+
+# 手元のマシン: ポートフォワード
+ssh -L 8241:localhost:8241 user@remote
+# http://localhost:8241 を開いて「listen here」
+```
+
+音声デバイスの無いマシンでは `--no-audio` なしでも自動的にストリーミング専用になる。
+また `--host 0.0.0.0`（現在のデフォルト）ならLAN内から `http://<マシンのIP>:8241` で
+直接アクセスできる（認証なし——信頼できるネットワークでのみ使用）。
+
+## Windows（NVIDIA GPU）で動かす
+
+`live.py` はバックエンドを自動選択する: macOSではMLX、それ以外ではJAX
+（`--backend mlx|jax` で明示も可）。JAXはネイティブWindowsのGPUに非対応のため
+**WSL2 (Ubuntu) + CUDA** を使う:
+
+1. Windows側: NVIDIAドライバ + WSL2 + Ubuntu（`wsl --install`）
+2. WSL内で:
+   ```bash
+   git clone https://github.com/AtsuyaTsuchida/adaptive-music-mrt2-test.git && cd adaptive-music-mrt2-test
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install "magenta-rt[jax]==2.0.2" "jax[cuda12]" sounddevice==0.5.5
+   sudo apt install ffmpeg libportaudio2
+   scripts/prepare_samples.sh
+   mrt models init
+   mrt checkpoints download mrt2_base.safetensors   # JAX用重み（mrt models download はMLX専用）
+   python scripts/live.py --record          # backend=jax が自動選択される
+   ```
+3. ブラウザで http://localhost:8241 を開く（Windows側のブラウザでよい）
+
+補足:
+- 音声はWindows 11のWSLg（PulseAudio）経由で出る。出ない場合は `pactl info` で確認
+- リアルタイム生成には十分なGPUが必要（VRAM 8GB以上推奨）。実時間を割った場合は
+  生成レイヤーだけがフェードアウトし、環境音レイヤーは鳴り続ける
+- JAXバックエンドは初回起動が遅いことがある（チェックポイント取得+コンパイル）
+
+## 仕組み
+
+聴こえる音は2レイヤーのミックス:
+
+1. **原音レイヤー** — 環境音の録音そのもの（ループ再生）
+2. **生成レイヤー** — MRT2のストリーム生成。40msフレームの自己回帰で、
+   `state` をチャンク間で引き継ぐため音楽は途切れない
+
+生成の条件は **MusicCoCa埋め込み**（音声とテキストが同一の768次元空間を共有）の
+加重平均で、これがリアルタイム操作の中心:
+
+| パラメータ | 役割 |
+|---|---|
+| `w_audio` | 環境音の埋め込み(1.0) ⇄ テキストプロンプト(0.0) のブレンド——「音楽度」の軸 |
+| `env_gain` / `gen_gain` | レイヤー音量（再生側で適用、反映約0.25秒） |
+| `drums` | 生成レイヤーへのリズム条件（auto / off / on） |
+| `env` | 環境音ソース切替（原音レイヤーと埋め込みの両方が切り替わる） |
+| `prompt` | テキストプロンプト（w_audio < 1.0 で効く） |
+
+### 設計メモ
+
+- **MLXはモデルをロードしたスレッドでしか推論できない**
+  （`There is no Stream(gpu, 1)`）→ モデルは生成スレッド内でロード
+- **埋め込みは専用ワーカースレッドで計算** — プロンプト/ソース変更で生成は止まらない。
+  新しい埋め込みができるまで旧スタイルで演奏継続。全サンプルは起動時に事前埋め込み
+- **ミックスは再生側で実施** — 原音レイヤーはただのファイル再生であり、生成の
+  遅延に依存させない。生成が遅れた場合は生成レイヤーだけがフェードアウトし、
+  現実（環境音）が残る
+- 生成速度はM3 Maxで実時間の0.85〜1.03倍（マシン負荷・電源状態に依存）。
+  **バッテリー駆動ではGPUが絞られ実時間を割る**ため電源接続を推奨
+- 出力デバイスはストリーム開始時に固定。AirPods等への切替は再起動が必要
