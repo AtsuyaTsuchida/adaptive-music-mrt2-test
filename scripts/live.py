@@ -327,6 +327,8 @@ def main():
     global BACKEND
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8241)
+    ap.add_argument("--host", default="0.0.0.0",
+                    help="bind address (0.0.0.0 = reachable from the LAN, no auth)")
     ap.add_argument("--record", action="store_true", help="save session to out/ on exit")
     ap.add_argument("--backend", choices=["mlx", "jax"], default=BACKEND,
                     help="mlx=Apple Silicon, jax=NVIDIA (default: by platform)")
@@ -341,11 +343,11 @@ def main():
     threading.Thread(target=player, args=(audio_q, record, not args.no_audio),
                      daemon=True).start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     def _term(*_a):
         raise KeyboardInterrupt  # let SIGTERM save --record too
     signal.signal(signal.SIGTERM, _term)
-    print(f"Live control: http://localhost:{args.port}", flush=True)
+    print(f"Live control: http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
