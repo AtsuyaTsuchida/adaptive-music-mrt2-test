@@ -30,8 +30,11 @@ to fetch 3.12 automatically), ffmpeg (`brew install ffmpeg`), ~4 GB disk for mod
 git clone https://github.com/AtsuyaTsuchida/adaptive-music-mrt2-test.git
 cd adaptive-music-mrt2-test
 
+brew install ffmpeg                               # skip if already installed
+
 # environment (plain `python3 -m venv` works too if your python is 3.11+)
 curl -LsSf https://astral.sh/uv/install.sh | sh   # if you don't have uv
+source $HOME/.local/bin/env 2>/dev/null || true   # put uv on PATH in this shell
 uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install "magenta-rt[mlx]==2.0.2" sounddevice==0.5.5
@@ -165,8 +168,11 @@ ffmpeg（`brew install ffmpeg`）、モデル用に約4GBのディスク。
 git clone https://github.com/AtsuyaTsuchida/adaptive-music-mrt2-test.git
 cd adaptive-music-mrt2-test
 
+brew install ffmpeg                               # 導入済みならスキップ
+
 # 環境構築（Pythonが3.11+なら素の python3 -m venv でも可）
 curl -LsSf https://astral.sh/uv/install.sh | sh   # uvが無ければ
+source $HOME/.local/bin/env 2>/dev/null || true   # このシェルでuvにPATHを通す
 uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install "magenta-rt[mlx]==2.0.2" sounddevice==0.5.5
