@@ -32,7 +32,7 @@ cd adaptive-music-mrt2-test
 curl -LsSf https://astral.sh/uv/install.sh | sh   # if you don't have uv
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install "magenta-rt[mlx]" sounddevice
+uv pip install "magenta-rt[mlx]==2.0.2" sounddevice==0.5.5
 
 scripts/prepare_samples.sh                        # fetch + convert samples (first run only)
 mrt models init && mrt models download mrt2_base  # model weights (~4 GB)
@@ -66,6 +66,9 @@ ssh -L 8241:localhost:8241 user@remote
 Machines without an audio device fall back to streaming-only automatically,
 even without `--no-audio`.
 
+Alternatively `--host 0.0.0.0` exposes the panel directly on the LAN
+(no auth — trusted networks only), reachable at `http://<machine-ip>:8241`.
+
 ## Running on Windows (NVIDIA GPU)
 
 `live.py` picks its backend automatically: MLX on macOS, JAX elsewhere
@@ -77,7 +80,7 @@ so use **WSL2 (Ubuntu) + CUDA**:
    ```bash
    git clone https://github.com/AtsuyaTsuchida/adaptive-music-mrt2-test.git && cd adaptive-music-mrt2-test
    python3 -m venv .venv && source .venv/bin/activate
-   pip install "magenta-rt[jax]" "jax[cuda12]" sounddevice
+   pip install "magenta-rt[jax]==2.0.2" "jax[cuda12]" sounddevice==0.5.5
    sudo apt install ffmpeg libportaudio2
    scripts/prepare_samples.sh
    mrt models init
